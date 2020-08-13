@@ -8,11 +8,16 @@ import cv2
 import rospy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
+from sensor_msgs.msg import Range
+
+from clover import srv
 
 # initialize OpenCV's CSRT tracker
 tracker = cv2.TrackerCSRT_create()
 
-rospy.init_node('landing_target_tracker')
+rospy.init_node('one_click_landing')
+navigate = rospy.ServiceProxy('navigate', srv.Navigate)
+
 bridge = CvBridge()
 
 tracker_initialized = False
@@ -24,8 +29,6 @@ def set_tracker_bbox(event, x, y, flags, param):
 		
 		r = 10
 		tracker_bbox = (x - r, y - r, r * 2, r * 2)
-
-		print(tracker_bbox)
 
 		if tracker_initialized:
 			del tracker
@@ -39,6 +42,25 @@ def set_tracker_bbox(event, x, y, flags, param):
 		tracker_initialized = True
 
 		mouseX, mouseY = x, y
+
+		distance_to_ground = rospy.wait_for_message('rangefinder/range', Range)
+
+		# Central point of the camera
+		central_point_x = 160
+		central_point_y = 120
+		
+		# Focal length in pixels
+		focal_length = 92
+
+		print(mouseX, mouseY)
+
+		real_x = ((float(mouseX) - float(central_point_x)) / float(focal_length)) * distance_to_ground.range
+		real_y = ((float(mouseY) - float(central_point_y)) / float(focal_length)) * distance_to_ground.range
+
+		print("Navigate to x: ", real_x, " y: ", real_y, " z: ", distance_to_ground.range)
+
+		navigate(x=-real_y, y=-real_x, z=-distance_to_ground.range, yaw=float('nan'), speed=5, frame_id='body', auto_arm=True)
+
 
 
 def image_callback(frame):

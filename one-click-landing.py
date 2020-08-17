@@ -3,6 +3,7 @@ import imutils
 import time
 import cv2
 import numpy as np
+import math
 
 import rospy
 from sensor_msgs.msg import Image
@@ -61,11 +62,13 @@ def navigate_to_calculated_setpoint(tracking_point_x, tracking_point_y, rangefin
 	real_x = ((float(tracking_point_x) - central_point_x) / focal_length) * rangefinder_data.range
 	real_y = ((float(tracking_point_y) - central_point_y) / focal_length) * rangefinder_data.range
 
-	# Lower speed on low alt to prevent oscillations
-	if rangefinder_data.range > 20:
-		speed = 2
+	print(math.hypot(abs(real_x), abs(real_y)))
+
+	# Lower speed on close horizontal distances
+	if math.hypot(abs(real_x), abs(real_y)) < 2.0:
+		speed = 0.5
 	else:
-		speed = 1
+		speed = 2
 
 	print("Navigate to x: ", real_x, " y: ", real_y, " z: ", rangefinder_data.range, "speed: ", speed)
 	navigate(x=-real_y, y=-real_x, z=-rangefinder_data.range, yaw=float('nan'), speed=speed, frame_id='base_link', auto_arm=True)
@@ -86,8 +89,14 @@ def image_callback(frame):
 	global tracker_initialized
 	global last_time
 
+	global tracker
+
 	if tracker_initialized:
 		(ok, bbox) = tracker.update(cv_image)
+
+		if not ok:
+			print("Tracker reported failure")
+
 		(x, y, w, h) = [int(v) for v in bbox]
 
 		landing_point_x = x + w/2
@@ -105,8 +114,11 @@ def image_callback(frame):
 			# If we are above 2 meters
 			if rangefinder_data.range > 2.0:
 				navigate_to_calculated_setpoint(landing_point_x, landing_point_y, rangefinder_data)
-			else:
+			else: # Stop tracking point, just land here
 				land()
+				if tracker:
+					tracker_initialized = False
+
 
 			last_time = rospy.get_time()
 

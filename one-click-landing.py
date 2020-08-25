@@ -1,5 +1,9 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import argparse
 import imutils
+import socket
 import time
 import cv2
 import numpy as np
@@ -13,6 +17,12 @@ from sensor_msgs.msg import CameraInfo
 
 from clover import srv
 from std_srvs.srv import Trigger
+from mavros_msgs.srv import SetMode
+
+# Pipeline to send video frames to QGC
+stream = cv2.VideoWriter("appsrc ! videoconvert ! video/x-raw,format=I420 ! x264enc speed-preset=ultrafast tune=zerolatency ! h264parse ! rtph264pay ! udpsink host=127.0.0.1 port=5600 sync=false", cv2.CAP_GSTREAMER, 0, 60.0, (640, 480))
+if not stream.isOpened():
+    print("Stream not opened")
 
 # initialize OpenCV's CSRT tracker
 tracker = cv2.TrackerCSRT_create()
@@ -21,6 +31,7 @@ rospy.init_node('one_click_landing')
 navigate = rospy.ServiceProxy('navigate', srv.Navigate)
 get_telemetry = rospy.ServiceProxy('get_telemetry', srv.GetTelemetry)
 land = rospy.ServiceProxy('land', Trigger)
+set_mode = rospy.ServiceProxy('mavros/set_mode', SetMode)
 
 bridge = CvBridge()
 
@@ -42,7 +53,7 @@ def set_tracker_bbox(event, x, y, flags, param):
 
 	if event == cv2.EVENT_LBUTTONDOWN:
 		
-		r = 10
+		r = 15
 		tracker_bbox = (x - r, y - r, r * 2, r * 2)
 
 		if tracker_initialized:
@@ -64,11 +75,11 @@ def navigate_to_calculated_setpoint(tracking_point_x, tracking_point_y, rangefin
 
 	print(math.hypot(abs(real_x), abs(real_y)))
 
-	# Lower speed on close horizontal distances
+	# Lower speed on close horizontal distances to prevent oscillations
 	if math.hypot(abs(real_x), abs(real_y)) < 2.0:
 		speed = 0.5
 	else:
-		speed = 2
+		speed = 3.0
 
 	print("Navigate to x: ", real_x, " y: ", real_y, " z: ", rangefinder_data.range, "speed: ", speed)
 	navigate(x=-real_y, y=-real_x, z=-rangefinder_data.range, yaw=float('nan'), speed=speed, frame_id='base_link', auto_arm=True)
@@ -94,8 +105,13 @@ def image_callback(frame):
 	if tracker_initialized:
 		(ok, bbox) = tracker.update(cv_image)
 
+		# HOLD mode when lost target
 		if not ok:
 			print("Tracker reported failure")
+			set_mode(custom_mode='HOLD')
+			del tracker
+			tracker = cv2.TrackerCSRT_create()
+			tracker_initialized = false
 
 		(x, y, w, h) = [int(v) for v in bbox]
 
@@ -118,6 +134,8 @@ def image_callback(frame):
 				land()
 				if tracker:
 					tracker_initialized = False
+					del tracker
+					tracker = cv2.TrackerCSRT_create()
 
 
 			last_time = rospy.get_time()
@@ -126,11 +144,16 @@ def image_callback(frame):
 	cv2.imshow("Frame", cv_image)
 	cv2.setMouseCallback('Frame', set_tracker_bbox)
 
+	# Sending frame to QGC
+	stream.write(cv_image)
+
 	key = cv2.waitKey(1) & 0xFF
 	
 image_sub = rospy.Subscriber('main_camera/image_raw', Image, image_callback)
 
 rospy.spin()
+
+udp_video_socket.close()
 
 # close all windows
 cv2.destroyAllWindows()
